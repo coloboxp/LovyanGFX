@@ -1,6 +1,41 @@
 # DMA Operations and Optimization
 
-This guide explains Direct Memory Access (DMA) operations and optimization techniques in LovyanGFX.
+Direct Memory Access (DMA) is a hardware feature that allows peripherals to transfer data directly to/from memory without CPU intervention. This guide explains DMA operations and optimization techniques in LovyanGFX.
+
+## Understanding DMA
+
+### DMA Basics
+DMA transfers offer several advantages:
+1. CPU Offloading:
+   - CPU is free during transfers
+   - Can perform other tasks
+   - Reduced interrupt overhead
+
+2. Performance Benefits:
+   - Higher transfer speeds
+   - Lower latency
+   - Reduced system bus congestion
+
+3. Memory Considerations:
+   - Requires aligned memory
+   - Special memory allocation
+   - Buffer size restrictions
+
+### Memory Requirements
+DMA operations have specific memory requirements:
+```cpp
+// Memory alignment requirements
+#define DMA_ALIGNMENT 32          // 32-byte alignment for ESP32
+#define CACHE_LINE_SIZE 32        // Cache line size
+#define DMA_BUFFER_SIZE 1024      // Optimal buffer size
+
+// Memory capabilities
+#define DMA_MEMORY_FLAGS ( \
+    MALLOC_CAP_DMA |           // DMA-capable memory \
+    MALLOC_CAP_32BIT |         // 32-bit aligned \
+    MALLOC_CAP_INTERNAL        // Internal memory \
+)
+```
 
 ## DMA Configuration
 
@@ -17,34 +52,51 @@ public:
         {
             auto cfg = _bus_instance.config();
             
-            // Enable DMA
-            cfg.dma_channel = 1;     // DMA channel (1 or 2)
-            cfg.spi_3wire  = false;  // Must be false for DMA
-            cfg.use_lock   = true;   // Enable SPI transaction locking
+            // DMA Channel Selection:
+            // - Channel 1: Typically for SPI transfers
+            // - Channel 2: Available for other peripherals
+            cfg.dma_channel = 1;     
             
-            // SPI configuration for DMA
-            cfg.spi_host = VSPI_HOST;     // SPI peripheral
-            cfg.freq_write = 80000000;    // 80MHz for DMA
-            cfg.freq_read  = 16000000;    // 16MHz for read
-            cfg.spi_mode = 0;             // SPI mode
-            cfg.pin_sclk = 18;            // SCLK pin
-            cfg.pin_mosi = 23;            // MOSI pin
-            cfg.pin_miso = 19;            // MISO pin
-            cfg.pin_dc   = 27;            // D/C pin
+            // 3-wire SPI mode must be disabled for DMA
+            // DMA requires MOSI and MISO to be separate
+            cfg.spi_3wire  = false;  
+            
+            // Enable transaction locking for thread safety
+            // Prevents concurrent DMA access
+            cfg.use_lock   = true;   
+            
+            // SPI Configuration for DMA
+            cfg.spi_host = VSPI_HOST;     // SPI peripheral (VS or HS)
+            cfg.freq_write = 80000000;    // 80MHz max for DMA
+            cfg.freq_read  = 16000000;    // Lower for reliable reads
+            cfg.spi_mode = 0;             // Mode 0: CPOL=0, CPHA=0
+            
+            // Pin Configuration
+            // Must use DMA-capable pins
+            cfg.pin_sclk = 18;            // Hardware SPI CLK
+            cfg.pin_mosi = 23;            // Hardware SPI MOSI
+            cfg.pin_miso = 19;            // Hardware SPI MISO
+            cfg.pin_dc   = 27;            // Data/Command control
             
             _bus_instance.config(cfg);
             _panel_instance.setBus(&_bus_instance);
         }
         
-        // Panel configuration
+        // Panel configuration for DMA
         {
             auto cfg = _panel_instance.config();
             
-            // Enable DMA-compatible settings
-            cfg.memory_width     = 240;   // Must match panel width
-            cfg.memory_height    = 320;   // Must match panel height
-            cfg.dma_channel     = 1;      // Same as bus DMA channel
-            cfg.use_psram       = true;   // Enable PSRAM if available
+            // Memory dimensions must match panel
+            // This ensures proper DMA transfers
+            cfg.memory_width     = 240;   // Panel width
+            cfg.memory_height    = 320;   // Panel height
+            
+            // DMA channel must match bus
+            cfg.dma_channel     = 1;      
+            
+            // PSRAM usage for large buffers
+            // Falls back to internal memory if unavailable
+            cfg.use_psram       = true;   
             
             _panel_instance.config(cfg);
         }
@@ -58,32 +110,59 @@ public:
 
 ```cpp
 class DMABuffer {
-    static const size_t BUFFER_SIZE = 1024;  // DMA buffer size
+    // Buffer size calculation:
+    // - Multiple of cache line size (32 bytes)
+    // - Large enough for efficient transfers
+    // - Small enough to fit in memory
+    static const size_t BUFFER_SIZE = 1024;  // 1KB optimal for most cases
+    
+    // Buffer pointer must be aligned
     uint16_t* buffer;
     bool using_psram;
     
 public:
     DMABuffer() {
-        // Allocate DMA-capable memory
+        // Memory allocation strategy:
         #if defined(ESP32)
             if (psramFound()) {
-                buffer = (uint16_t*)ps_malloc(BUFFER_SIZE * sizeof(uint16_t));
+                // PSRAM allocation:
+                // - Larger buffers possible
+                // - Slightly slower access
+                // - Must be cache-aligned
+                buffer = (uint16_t*)ps_malloc(
+                    BUFFER_SIZE * sizeof(uint16_t)
+                );
                 using_psram = true;
             } else {
+                // DMA-capable memory allocation:
+                // - Must be internal memory
+                // - 32-bit aligned
+                // - Contiguous physical memory
                 buffer = (uint16_t*)heap_caps_malloc(
                     BUFFER_SIZE * sizeof(uint16_t),
-                    MALLOC_CAP_DMA
+                    MALLOC_CAP_DMA | MALLOC_CAP_32BIT
                 );
                 using_psram = false;
             }
         #else
-            buffer = (uint16_t*)malloc(BUFFER_SIZE * sizeof(uint16_t));
+            // Standard allocation for non-ESP platforms
+            buffer = (uint16_t*)aligned_alloc(
+                32,  // 32-byte alignment
+                BUFFER_SIZE * sizeof(uint16_t)
+            );
             using_psram = false;
         #endif
     }
     
     ~DMABuffer() {
-        if (buffer) free(buffer);
+        if (buffer) {
+            // Proper cleanup based on allocation type
+            if (using_psram) {
+                free(buffer);  // PSRAM allocation
+            } else {
+                heap_caps_free(buffer);  // DMA memory
+            }
+        }
     }
     
     uint16_t* get() { return buffer; }

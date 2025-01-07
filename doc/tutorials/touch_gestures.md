@@ -1,34 +1,54 @@
 # Touch Gesture System Guide
 
-This guide explains how to implement a comprehensive touch gesture system in LovyanGFX.
+This guide explains how to implement a comprehensive touch gesture system in LovyanGFX, including gesture detection, tracking, and event handling.
 
 ## Gesture System Architecture
 
-The gesture system consists of gesture detection, tracking, and event handling components:
+The gesture system consists of several components that work together to detect and handle various touch gestures:
 
 ```cpp
 class TouchGestureSystem {
 protected:
+    // Structure to track individual touch points
     struct TouchPoint {
         int16_t x, y;           // Current position
-        int16_t start_x, start_y; // Starting position
-        int16_t last_x, last_y;   // Previous position
-        uint32_t start_time;      // Touch start time
-        uint32_t last_time;       // Last update time
-        bool active;              // Touch point active
+        int16_t start_x, start_y; // Starting position for gesture
+        int16_t last_x, last_y;   // Previous position for velocity
+        uint32_t start_time;      // Touch start timestamp
+        uint32_t last_time;       // Last update timestamp
+        bool active;              // Whether point is being tracked
+        
+        // Calculate distance moved from start
+        float getDistance() const {
+            // Calculate Euclidean distance from start point using Pythagorean theorem
+            // distance = √((x₂-x₁)² + (y₂-y₁)²)
+            float dx = x - start_x;  // Change in x
+            float dy = y - start_y;  // Change in y
+            return sqrt(dx * dx + dy * dy);  // Hypotenuse length
+        }
+        
+        // Calculate velocity in pixels per second
+        float getVelocity() const {
+            // Convert milliseconds to seconds for standard units
+            float dt = (last_time - start_time) / 1000.0f;
+            if (dt == 0) return 0;  // Prevent division by zero
+            
+            // Velocity = distance / time (pixels per second)
+            return getDistance() / dt;
+        }
     };
     
-    static const int MAX_TOUCHES = 5;  // Maximum touch points
-    TouchPoint points[MAX_TOUCHES];
-    LGFX* display;
+    static const int MAX_TOUCHES = 5;  // Maximum simultaneous touch points
+    TouchPoint points[MAX_TOUCHES];    // Array of touch points
+    LGFX* display;                     // Display reference
     
-    // Gesture thresholds
+    // Gesture detection thresholds
     struct {
-        uint32_t tap_duration = 200;      // Max tap duration (ms)
-        uint32_t long_press_duration = 500; // Long press duration
-        int16_t swipe_threshold = 50;     // Min swipe distance
-        int16_t zoom_threshold = 10;      // Min zoom distance
-        int16_t rotation_threshold = 5;   // Min rotation angle
+        uint32_t tap_duration = 200;      // 200ms maximum for tap
+        uint32_t long_press_duration = 500; // 500ms for long press
+        int16_t swipe_threshold = 50;     // 50px minimum swipe
+        int16_t zoom_threshold = 10;      // 10% scale change
+        int16_t rotation_threshold = 5;   // 5 degrees minimum
     } config;
     
 public:
@@ -36,27 +56,20 @@ public:
         reset();
     }
     
+    // Reset all touch tracking
     void reset() {
         for (int i = 0; i < MAX_TOUCHES; i++) {
             points[i].active = false;
         }
     }
-};
-```
-
-## Gesture Detection
-
-### Basic Touch Tracking
-
-```cpp
-class TouchGestureSystem {
-    // ... previous code ...
     
+    // Main update function - called every frame
     void update() {
         int16_t x, y;
         if (display->getTouch(&x, &y)) {
-            // New touch point
+            // New touch point detected
             if (!points[0].active) {
+                // Initialize new touch point
                 points[0].active = true;
                 points[0].start_x = points[0].x = x;
                 points[0].start_y = points[0].y = y;
@@ -66,299 +79,366 @@ class TouchGestureSystem {
                 // Update existing touch
                 points[0].last_x = points[0].x;
                 points[0].last_y = points[0].y;
+                points[0].last_time = millis();
                 points[0].x = x;
                 points[0].y = y;
-                points[0].last_time = millis();
-                onTouchMove(0, x, y);
+                
+                // Check for gestures
+                detectGestures();
             }
         } else if (points[0].active) {
-            // Touch ended
-            onTouchEnd(0, points[0].x, points[0].y);
+            // Touch released - check for tap gestures
+            uint32_t duration = millis() - points[0].start_time;
+            float distance = points[0].getDistance();
+            
+            if (distance < config.swipe_threshold) {
+                if (duration < config.tap_duration) {
+                    onTap(points[0].x, points[0].y);
+                } else if (duration >= config.long_press_duration) {
+                    onLongPress(points[0].x, points[0].y);
+                }
+            }
+            
             points[0].active = false;
+            onTouchEnd(0, points[0].x, points[0].y);
         }
     }
     
 protected:
-    virtual void onTouchStart(int id, int16_t x, int16_t y) {}
-    virtual void onTouchMove(int id, int16_t x, int16_t y) {}
-    virtual void onTouchEnd(int id, int16_t x, int16_t y) {}
-};
-```
-
-### Multi-Touch Support
-
-```cpp
-class TouchGestureSystem {
-    // ... previous code ...
-    
-    void updateMultiTouch() {
-        static touch_point_t raw_points[MAX_TOUCHES];
-        uint8_t count = display->getTouchRaw(raw_points, MAX_TOUCHES);
+    // Detect various gestures based on touch movement
+    void detectGestures() {
+        TouchPoint& p = points[0];
+        float distance = p.getDistance();
+        float velocity = p.getVelocity();
         
-        // Update active points
-        for (int i = 0; i < count; i++) {
-            int16_t x = raw_points[i].x;
-            int16_t y = raw_points[i].y;
-            
-            if (!points[i].active) {
-                // New touch point
-                points[i].active = true;
-                points[i].start_x = points[i].x = x;
-                points[i].start_y = points[i].y = y;
-                points[i].start_time = millis();
-                onTouchStart(i, x, y);
-            } else {
-                // Update existing touch
-                points[i].last_x = points[i].x;
-                points[i].last_y = points[i].y;
-                points[i].x = x;
-                points[i].y = y;
-                points[i].last_time = millis();
-                onTouchMove(i, x, y);
-            }
-        }
+        // Calculate movement vector components
+        float dx = p.x - p.start_x;  // Horizontal displacement
+        float dy = p.y - p.start_y;  // Vertical displacement
         
-        // End inactive points
-        for (int i = count; i < MAX_TOUCHES; i++) {
-            if (points[i].active) {
-                onTouchEnd(i, points[i].x, points[i].y);
-                points[i].active = false;
-            }
-        }
-    }
-};
-```
-
-## Gesture Recognition
-
-### Single-Touch Gestures
-
-```cpp
-class TouchGestureSystem {
-    // ... previous code ...
-    
-    void detectSingleTouchGestures() {
-        if (!points[0].active) return;
-        
-        uint32_t duration = millis() - points[0].start_time;
-        int16_t dx = points[0].x - points[0].start_x;
-        int16_t dy = points[0].y - points[0].start_y;
-        float distance = sqrt(dx * dx + dy * dy);
-        
-        // Detect tap or long press
-        if (distance < config.swipe_threshold) {
-            if (duration >= config.long_press_duration) {
-                onLongPress(points[0].x, points[0].y);
-            }
-            return;
-        }
-        
-        // Detect swipe direction
-        if (distance >= config.swipe_threshold) {
-            float angle = atan2(dy, dx) * 180 / PI;
-            
+        // Detect swipe gestures when:
+        // 1. Movement distance exceeds threshold
+        // 2. Movement speed is above 0.5 pixels per second
+        if (distance >= config.swipe_threshold && velocity > 0.5f) {
+            SwipeDirection direction;
+            // Compare absolute values to determine primary axis of movement
             if (abs(dx) > abs(dy)) {
-                // Horizontal swipe
-                onSwipe(dx > 0 ? SwipeDirection::Right : SwipeDirection::Left);
+                // Horizontal movement dominates - check direction
+                direction = dx > 0 ? SwipeDirection::Right : SwipeDirection::Left;
             } else {
-                // Vertical swipe
-                onSwipe(dy > 0 ? SwipeDirection::Down : SwipeDirection::Up);
+                // Vertical movement dominates - check direction
+                direction = dy > 0 ? SwipeDirection::Down : SwipeDirection::Up;
             }
+            onSwipe(direction, velocity);
+        }
+        
+        // For multi-touch gestures (if supported)
+        if (points[1].active) {
+            detectMultiTouchGestures();
         }
     }
     
-protected:
-    enum class SwipeDirection {
-        Left, Right, Up, Down
-    };
-    
-    virtual void onTap(int16_t x, int16_t y) {}
-    virtual void onLongPress(int16_t x, int16_t y) {}
-    virtual void onSwipe(SwipeDirection direction) {}
-};
-```
-
-### Multi-Touch Gestures
-
-```cpp
-class TouchGestureSystem {
-    // ... previous code ...
-    
+    // Handle multi-touch gestures like pinch and rotate
     void detectMultiTouchGestures() {
-        if (!points[0].active || !points[1].active) return;
+        TouchPoint& p1 = points[0];
+        TouchPoint& p2 = points[1];
         
-        // Calculate current and previous distances
-        float curr_dx = points[1].x - points[0].x;
-        float curr_dy = points[1].y - points[0].y;
-        float prev_dx = points[1].last_x - points[0].last_x;
-        float prev_dy = points[1].last_y - points[0].last_y;
+        // Calculate distances between touch points:
+        // - curr_dist: current distance between points
+        // - start_dist: distance at gesture start
+        float curr_dist = getDistance(p1.x, p1.y, p2.x, p2.y);
+        float start_dist = getDistance(p1.start_x, p1.start_y, 
+                                     p2.start_x, p2.start_y);
         
-        float curr_dist = sqrt(curr_dx * curr_dx + curr_dy * curr_dy);
-        float prev_dist = sqrt(prev_dx * prev_dx + prev_dy * prev_dy);
+        // Calculate scale factor as ratio of distances
+        // scale > 1.0: pinch out (zoom in)
+        // scale < 1.0: pinch in (zoom out)
+        float scale = curr_dist / start_dist;
         
-        // Detect pinch/zoom
-        float scale_change = curr_dist / prev_dist;
-        if (abs(scale_change - 1.0f) > config.zoom_threshold / 100.0f) {
-            onZoom(scale_change);
+        // Detect significant pinch gestures
+        // Convert threshold from pixels to scale factor percentage
+        if (abs(scale - 1.0f) > config.zoom_threshold / 100.0f) {
+            onPinch(scale);
         }
         
-        // Detect rotation
-        float curr_angle = atan2(curr_dy, curr_dx);
-        float prev_angle = atan2(prev_dy, prev_dx);
-        float rotation = (curr_angle - prev_angle) * 180 / PI;
+        // Calculate rotation angle:
+        // 1. Get angle between points at current position
+        // 2. Get angle between points at start position
+        // 3. Subtract to get relative rotation
+        float current_angle = getAngle(p1.x - p2.x, p1.y - p2.y);
+        float start_angle = getAngle(p1.start_x - p2.start_x, 
+                                    p1.start_y - p2.start_y);
+        float rotation = current_angle - start_angle;
         
+        // Detect significant rotation
+        // threshold typically 5-10 degrees
         if (abs(rotation) > config.rotation_threshold) {
             onRotate(rotation);
         }
     }
     
-protected:
-    virtual void onZoom(float scale) {}
+    // Utility functions with detailed explanations
+    float getDistance(int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+        // Calculate Euclidean distance between two points
+        // Uses Pythagorean theorem: d = √((x₂-x₁)² + (y₂-y₁)²)
+        float dx = x2 - x1;  // Change in x
+        float dy = y2 - y1;  // Change in y
+        return sqrt(dx * dx + dy * dy);  // Hypotenuse length
+    }
+    
+    float getAngle(float x, float y) {
+        // Calculate angle in degrees from x-axis to point (x,y)
+        // atan2 returns angle in radians (-π to π)
+        // Convert to degrees by multiplying by 180/π
+        return atan2(y, x) * 180.0f / PI;
+    }
+    
+    // Virtual event handlers - override in derived classes
+    virtual void onTouchStart(int id, int16_t x, int16_t y) {}
+    virtual void onTouchEnd(int id, int16_t x, int16_t y) {}
+    virtual void onTap(int16_t x, int16_t y) {}
+    virtual void onLongPress(int16_t x, int16_t y) {}
+    virtual void onSwipe(SwipeDirection direction, float velocity) {}
+    virtual void onPinch(float scale) {}
     virtual void onRotate(float angle) {}
-};
-```
-
-## Gesture Event Handling
-
-### Event System
-
-```cpp
-class TouchGestureSystem {
-    // ... previous code ...
-    
-    struct GestureEvent {
-        enum Type {
-            Tap,
-            LongPress,
-            Swipe,
-            Zoom,
-            Rotate
-        } type;
-        
-        union {
-            struct { int16_t x, y; } point;
-            SwipeDirection swipe;
-            float scale;
-            float angle;
-        } data;
-    };
-    
-    std::vector<std::function<void(const GestureEvent&)>> listeners;
-    
-public:
-    void addEventListener(std::function<void(const GestureEvent&)> listener) {
-        listeners.push_back(listener);
-    }
-    
-protected:
-    void dispatchEvent(const GestureEvent& event) {
-        for (auto& listener : listeners) {
-            listener(event);
-        }
-    }
-    
-    // Override virtual handlers
-    void onTap(int16_t x, int16_t y) override {
-        GestureEvent event;
-        event.type = GestureEvent::Tap;
-        event.data.point = {x, y};
-        dispatchEvent(event);
-    }
-    
-    // Similar implementations for other gesture events
 };
 ```
 
 ## Usage Example
 
+Here's how to implement the gesture system in your application:
+
 ```cpp
-class MyApplication {
-    LGFX display;
-    TouchGestureSystem gestures;
-    
+class MyGestureHandler : public TouchGestureSystem {
 public:
-    MyApplication() : gestures(&display) {
-        // Initialize display
-        display.init();
-        
-        // Add gesture event listener
-        gestures.addEventListener([this](const GestureEvent& event) {
-            handleGesture(event);
-        });
+    MyGestureHandler(LGFX* disp) : TouchGestureSystem(disp) {
+        // Customize gesture thresholds if needed
+        config.tap_duration = 150;        // Faster tap detection
+        config.swipe_threshold = 40;      // More sensitive swipes
+        config.long_press_duration = 750; // Longer press required
     }
     
-    void handleGesture(const GestureEvent& event) {
-        switch (event.type) {
-            case GestureEvent::Tap:
-                Serial.printf("Tap at %d,%d\n", 
-                    event.data.point.x, 
-                    event.data.point.y);
-                break;
-                
-            case GestureEvent::Swipe:
-                switch (event.data.swipe) {
-                    case SwipeDirection::Left:
-                        previousPage();
-                        break;
-                    case SwipeDirection::Right:
-                        nextPage();
-                        break;
-                }
-                break;
-                
-            case GestureEvent::Zoom:
-                updateScale(event.data.scale);
-                break;
-                
-            case GestureEvent::Rotate:
-                updateRotation(event.data.angle);
-                break;
+protected:
+    void onTap(int16_t x, int16_t y) override {
+        // Handle tap event
+        Serial.printf("Tap at %d,%d\n", x, y);
+    }
+    
+    void onLongPress(int16_t x, int16_t y) override {
+        // Handle long press
+        Serial.printf("Long press at %d,%d\n", x, y);
+    }
+    
+    void onSwipe(SwipeDirection direction, float velocity) override {
+        // Handle swipe with direction and speed
+        const char* dir = "";
+        switch (direction) {
+            case SwipeDirection::Left:  dir = "Left"; break;
+            case SwipeDirection::Right: dir = "Right"; break;
+            case SwipeDirection::Up:    dir = "Up"; break;
+            case SwipeDirection::Down:  dir = "Down"; break;
         }
+        Serial.printf("Swipe %s (%.1f px/s)\n", dir, velocity);
     }
     
-    void update() {
-        gestures.update();  // Update gesture detection
-        // Other application updates
+    void onPinch(float scale) override {
+        // Handle pinch zoom
+        Serial.printf("Pinch scale: %.2f\n", scale);
+    }
+    
+    void onRotate(float angle) override {
+        // Handle rotation
+        Serial.printf("Rotation: %.1f degrees\n", angle);
     }
 };
 ```
 
-## Performance Optimization
+## Best Practices
+
+1. **Gesture Detection**
+   - Use appropriate thresholds for your use case
+   - Consider screen size when setting distances
+   - Implement proper debouncing
+   - Handle edge cases properly
+
+2. **Performance**
+   - Optimize calculations
+   - Use fast math where possible
+   - Minimize memory allocations
+   - Consider using lookup tables
+
+3. **User Experience**
+   - Provide visual feedback
+   - Use appropriate timing
+   - Consider accessibility
+   - Maintain consistency
+
+4. **Error Handling**
+   - Handle touch glitches
+   - Validate coordinates
+   - Reset state appropriately
+   - Implement timeout handling 
+
+## Advanced Gesture Examples
+
+### Momentum Scrolling Implementation
 
 ```cpp
-class TouchGestureSystem {
-    // ... previous code ...
+class MomentumScroller : public TouchGestureSystem {
+    float scroll_velocity;    // Current scroll velocity
+    float friction;          // Deceleration rate
+    float scroll_position;   // Current scroll position
+    uint32_t last_update;    // Last update timestamp
     
-    struct GestureState {
-        uint32_t last_update;
-        uint32_t update_interval;
-        bool gesture_active;
-        
-        void setUpdateInterval(uint32_t interval) {
-            update_interval = interval;
+public:
+    MomentumScroller(LGFX* disp) 
+        : TouchGestureSystem(disp)
+        , scroll_velocity(0)
+        , friction(0.95f)    // 5% velocity reduction per frame
+        , scroll_position(0)
+        , last_update(0)
+    {}
+    
+protected:
+    void onSwipe(SwipeDirection direction, float velocity) override {
+        // Convert swipe velocity to scroll velocity
+        // For vertical scrolling, only use vertical component
+        if (direction == SwipeDirection::Up || direction == SwipeDirection::Down) {
+            scroll_velocity = velocity * (direction == SwipeDirection::Up ? -1 : 1);
+            last_update = millis();
         }
+    }
+    
+    void update() {
+        TouchGestureSystem::update();  // Handle base gesture detection
         
-        bool shouldUpdate() {
-            uint32_t now = millis();
-            if (now - last_update >= update_interval) {
-                last_update = now;
-                return true;
+        // Apply momentum scrolling
+        if (abs(scroll_velocity) > 0.1f) {  // Continue until nearly stopped
+            uint32_t current_time = millis();
+            float dt = (current_time - last_update) / 1000.0f;  // Time in seconds
+            
+            // Update position based on velocity
+            scroll_position += scroll_velocity * dt;
+            
+            // Apply friction: velocity *= friction^(time_elapsed)
+            scroll_velocity *= pow(friction, dt * 60);  // Scale friction to 60fps
+            
+            last_update = current_time;
+            // Trigger redraw with new position
+            updateScrollPosition(scroll_position);
+        }
+    }
+};
+```
+
+### Multi-Touch Rotation and Scale
+
+```cpp
+class ImageManipulator : public TouchGestureSystem {
+    float image_scale;     // Current image scale
+    float image_rotation;  // Current rotation in degrees
+    float image_x, image_y;  // Image position
+    
+public:
+    ImageManipulator(LGFX* disp)
+        : TouchGestureSystem(disp)
+        , image_scale(1.0f)
+        , image_rotation(0.0f)
+        , image_x(disp->width() / 2)
+        , image_y(disp->height() / 2)
+    {
+        // Increase sensitivity for rotation
+        config.rotation_threshold = 2.0f;  // Detect smaller rotations
+    }
+    
+protected:
+    void onPinch(float scale) override {
+        // Accumulate scale changes
+        // Limit scale to reasonable range (0.1x to 10x)
+        image_scale = constrain(
+            image_scale * scale,  // Apply new scale factor
+            0.1f,                 // Minimum scale
+            10.0f                 // Maximum scale
+        );
+        redrawImage();
+    }
+    
+    void onRotate(float angle) override {
+        // Accumulate rotation changes
+        // Keep angle in range [0, 360)
+        image_rotation = fmod(
+            image_rotation + angle + 360.0f,  // Add angle and normalize
+            360.0f                           // Full circle
+        );
+        redrawImage();
+    }
+    
+private:
+    void redrawImage() {
+        display->startWrite();  // Begin SPI transaction
+        
+        // Save current transform
+        display->pushMatrix();
+        
+        // Apply transformations in correct order:
+        // 1. Translate to pivot point
+        // 2. Apply rotation
+        // 3. Apply scale
+        // 4. Translate back to draw position
+        display->translate(image_x, image_y);
+        display->rotate(image_rotation);
+        display->scale(image_scale);
+        display->translate(-image_x, -image_y);
+        
+        // Draw image here...
+        
+        // Restore original transform
+        display->popMatrix();
+        display->endWrite();
+    }
+};
+```
+
+### Gesture State Machine
+
+```cpp
+class GestureStateMachine : public TouchGestureSystem {
+    enum class GestureState {
+        None,
+        Tapping,    // Potential tap in progress
+        Dragging,   // Drag operation active
+        Pinching,   // Pinch zoom active
+        Rotating    // Rotation active
+    };
+    
+    GestureState current_state;
+    uint32_t state_start_time;
+    
+protected:
+    void onTouchStart(int id, int16_t x, int16_t y) override {
+        if (id == 0) {  // First touch
+            setState(GestureState::Tapping);
+        } else if (id == 1 && current_state == GestureState::Tapping) {
+            // Second touch - transition to multi-touch state
+            float initial_distance = getDistance(
+                points[0].x, points[0].y,
+                points[1].x, points[1].y
+            );
+            if (initial_distance > 100) {
+                setState(GestureState::Pinching);
+            } else {
+                setState(GestureState::Rotating);
             }
-            return false;
         }
-    } state;
-    
-public:
-    void setUpdateInterval(uint32_t interval) {
-        state.setUpdateInterval(interval);
     }
     
-    void update() {
-        if (!state.shouldUpdate()) return;
-        
-        // Regular update code
+private:
+    void setState(GestureState new_state) {
+        if (current_state != new_state) {
+            onStateExit(current_state);  // Cleanup old state
+            current_state = new_state;
+            state_start_time = millis();
+            onStateEnter(new_state);     // Initialize new state
+        }
     }
 };
-```
-
-These examples demonstrate how to implement a comprehensive touch gesture system in LovyanGFX. Adapt them according to your specific needs and requirements. 
+``` 
